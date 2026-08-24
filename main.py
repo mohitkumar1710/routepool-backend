@@ -12,7 +12,10 @@ app = FastAPI(title="routepool-api", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=[
+        "http://localhost:5173",
+        # TODO: add your Netlify URL here, e.g. "https://your-app.netlify.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
