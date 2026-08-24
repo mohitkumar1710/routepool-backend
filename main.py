@@ -14,7 +14,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        # TODO: add your Netlify URL here, e.g. "https://your-app.netlify.app"
+        "https://route-pool.netlify.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
