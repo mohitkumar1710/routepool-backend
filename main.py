@@ -32,7 +32,6 @@ app.include_router(auth.router, prefix="/api")
 @app.get("/health", tags=["health"])
 def health() -> Dict[str, str]:
     logger.info("activated render")
-    print("Activated render and logs shown using print command")
     return {"status": "ok"}
 
 
@@ -40,7 +39,6 @@ def health() -> Dict[str, str]:
 def supabase_ping() -> Dict[str, str]:
 
     logger.info("supabase activared")
-    print("supabase activated and logging using print command !")
     get_supabase().table("profiles").select("id").limit(1).execute()
     return {"status": "ok"}
 
