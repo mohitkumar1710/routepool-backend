@@ -5,8 +5,9 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import settings
+from app.config import get_supabase, settings
 from app.routers import auth, bookings, rides, routes, users
+from app.utils import logger
 
 app = FastAPI(title="routepool-api", version="0.1.0")
 
@@ -30,6 +31,15 @@ app.include_router(auth.router, prefix="/api")
 
 @app.get("/health", tags=["health"])
 def health() -> Dict[str, str]:
+    logger.info("activated render")
+    return {"status": "ok"}
+
+
+@app.get("/supabase", tags=["health"])
+def supabase_ping() -> Dict[str, str]:
+
+    logger.info("supabase activared")
+    get_supabase().table("profiles").select("id").limit(1).execute()
     return {"status": "ok"}
 
 

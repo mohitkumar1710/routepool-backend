@@ -1,8 +1,10 @@
 import datetime as dt
-from typing import Any, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.pricing import ALLOWED_RATES_PER_KM
+from app.schemas.route import Waypoint, parse_waypoints
 from app.schemas.user import User
 
 
@@ -22,7 +24,14 @@ class RideCreate(BaseModel):
     departure_date: dt.date
     departure_time: dt.time
     available_seats: int = Field(ge=1, le=8)
-    price_per_seat: float = Field(ge=0)
+    # The driver picks a rate band, not a price. What a seat costs is derived
+    # from it in app/pricing.py against the *route's* stored distance, so a
+    # crafted request cannot claim a 900 km trip is 12 km long -- see
+    # `create_ride`. A literal type rather than a plain int so an unlisted rate
+    # is a 422 from Pydantic and never reaches the pricing function.
+    price_per_km: Literal[ALLOWED_RATES_PER_KM] = Field(  # type: ignore[valid-type]
+        description="Rupees per kilometre. One of 8, 10 or 12."
+    )
     vehicle: str = Field(min_length=1)
     notes: Optional[str] = None
     # A ride can't be posted without a resolved route: the frontend runs
@@ -49,6 +58,9 @@ class Ride(BaseModel):
     departure_time: str
     available_seats: int
     price_per_seat: float
+    # Null for rides posted before pricing bands existed, whose `price_per_seat`
+    # was whatever the driver typed and cannot be re-derived.
+    price_per_km: Optional[float] = None
     vehicle: str
     notes: Optional[str] = None
     # Optional: nullable in the DB so rides posted before this column existed
@@ -65,6 +77,12 @@ class Ride(BaseModel):
     # `route_id`, only when someone actually opens a ride.
     distance_meters: Optional[int] = None
     duration_seconds: Optional[int] = None
+    # Also embedded, and unlike `geometry` this one is cheap: a stop list is a
+    # few short strings. It has to travel with the list, not just the detail
+    # view, because SearchResults matches a rider's search against every
+    # ride's stops in the browser -- a ride list without waypoints cannot
+    # answer "which rides pass near Solan?" at all.
+    waypoints: List[Waypoint] = Field(default_factory=list)
 
     @classmethod
     def from_row(cls, row: dict[str, Any], driver: dict[str, Any]) -> "Ride":
@@ -78,6 +96,9 @@ class Ride(BaseModel):
             departure_time=str(row["departure_time"])[:5],
             available_seats=row["available_seats"],
             price_per_seat=float(row["price_per_seat"]),
+            price_per_km=float(row["price_per_km"])
+            if row.get("price_per_km") is not None
+            else None,
             vehicle=row["vehicle"],
             notes=row.get("notes"),
             origin_lat=float(row["origin_lat"]) if row.get("origin_lat") is not None else None,
@@ -95,4 +116,5 @@ class Ride(BaseModel):
             duration_seconds=int(route["duration_seconds"])
             if route.get("duration_seconds") is not None
             else None,
+            waypoints=parse_waypoints(route.get("waypoints")),
         )

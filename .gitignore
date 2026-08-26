@@ -55,3 +55,17 @@ desktop.ini
 
 # --- Claude Code local settings ---
 .claude/settings.local.json
+
+# --- Credential files ---
+# Nothing here today; these are the shapes that get dropped into a repo by
+# accident -- private keys, cloud service-account JSON, Supabase CLI dumps.
+*.pem
+*.key
+*.p12
+*.pfx
+service-account*.json
+*-credentials.json
+
+# --- Supabase CLI scratch ---
+supabase/.temp/
+supabase/.branches/

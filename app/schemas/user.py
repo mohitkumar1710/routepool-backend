@@ -53,3 +53,15 @@ class AuthResponse(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     user: User
+
+
+class RoleUpdate(BaseModel):
+    """Body of `PATCH /users/me`.
+
+    Only `role` is accepted. Name, avatar and the verification/rating fields are
+    either the user's to change through a route that does not exist yet, or the
+    server's alone -- listing them here would imply an endpoint that honours
+    them.
+    """
+
+    role: UserRole
