@@ -45,13 +45,36 @@ produces `PGRST125 Invalid path specified in request URL` on every call.
 | `SUPABASE_URL` | – | Supabase project URL (Settings → API) |
 | `SUPABASE_ANON_KEY` | – | Public anon key; RLS-enforced client |
 | `SUPABASE_SERVICE_ROLE_KEY` | – | Service-role key; **bypasses RLS**, server-side only |
+| `SUPABASE_JWT_SECRET` | – | *Legacy projects only.* HS256 secret; leave empty if your project issues ES256 tokens |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated list of allowed frontend origins |
 | `HOST` | `127.0.0.1` | Bind address (`0.0.0.0` in Docker) |
 | `PORT` | `8000` | Port to listen on |
 | `RELOAD` | `1` | `1` enables auto-reload; the Docker image sets `0` |
+| `WEB_CONCURRENCY` | `1` | uvicorn worker processes (Docker only); see the Dockerfile before raising it |
 
-`.env` is gitignored — never commit real keys, and keep the service-role key out
-of anything the frontend can read.
+### How tokens are verified
+
+The API checks each bearer token itself instead of asking Supabase Auth over
+the network, which takes a full round trip off every authenticated request.
+There are two signing schemes, and the project decides which applies:
+
+- **Asymmetric (current, and almost certainly yours).** Tokens are ES256 with a
+  `kid`, verified against the public keys published at
+  `<SUPABASE_URL>/auth/v1/.well-known/jwks.json`. Nothing to configure — the
+  URL comes from `SUPABASE_URL` and the keys are cached at startup.
+- **Symmetric (legacy).** Tokens are HS256 signed with the shared JWT secret.
+  Only then does `SUPABASE_JWT_SECRET` need setting, from **Settings → API →
+  JWT Settings → JWT Secret**.
+
+The startup log states the mode outright:
+`token verification: local (JWKS, asymmetric keys)`.
+
+**Do not infer the scheme from the anon key.** The anon key is an HS256 JWT
+signed with the legacy secret even on projects whose *access tokens* are ES256,
+so checking it tells you nothing, confidently. Decode a real access token.
+
+If the keys cannot be read at all, the API falls back to a remote
+`auth.get_user()` per request and logs a warning — slower, but working.
 
 ## Running locally
 
@@ -107,20 +130,21 @@ All routes are prefixed with `/api`.
 ### Rides
 | Method | Path | Body | Description |
 | --- | --- | --- | --- |
-| `GET` | `/api/rides` | — | Every ride with a free seat; the frontend filters client-side |
+| `GET` | `/api/rides` | — | Every ride with a free seat; the frontend filters client-side. Optional `?limit=&offset=` — omitting them returns the full set as before |
 | `GET` | `/api/rides/{ride_id}` | — | One ride, with fresh seat count |
 | `POST` | `/api/rides` 🔒 | `{from, to, departure_date, departure_time, available_seats, price_per_seat, vehicle, notes}` | Publish a ride; driver comes from the token |
 
 ### Bookings
 | Method | Path | Body | Description |
 | --- | --- | --- | --- |
-| `GET` | `/api/bookings` 🔒 | — | The caller's own requests **plus** every request on rides they drive |
+| `GET` | `/api/bookings` 🔒 | — | The caller's own requests **plus** every request on rides they drive. Optional `?limit=&offset=` |
 | `POST` | `/api/bookings` 🔒 | `{ride_id, seats}` | Request seats, created `pending` |
 | `PATCH` | `/api/bookings/{booking_id}/status` 🔒 | `{status: "confirmed"｜"cancelled"}` | Driver accepts/declines; adjusts the ride's seat count atomically |
 
 ### Users
 | Method | Path | Description |
 | --- | --- | --- |
+| `GET` | `/api/users?ids=a,b,c` | Several profiles at once, by id (max 100). Unknown ids are absent rather than an error |
 | `GET` | `/api/users/{user_id}` | A profile, without its email address |
 
 Ride and profile reads are public; everything else needs a token. The `email`

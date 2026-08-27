@@ -10,3 +10,13 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      # Legacy projects only -- those still signing access tokens with the
+      # shared HS256 secret. A project on asymmetric keys (ES256) verifies
+      # against its public JWKS endpoint, derived from SUPABASE_URL, and needs
+      # nothing set here. The boot log states which mode is in use.
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+# WEB_CONCURRENCY is deliberately not pinned here. The Dockerfile defaults it
+# to 1, which is right for a single-core instance now that the app is fully
+# async, and Render sets its own value on plans with more cores -- which this
+# file would override if it named one. See the Dockerfile for the reasoning.

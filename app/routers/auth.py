@@ -8,29 +8,44 @@ RLS policies in `supabase/schema.sql` apply to every subsequent request.
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from supabase import Client
+from supabase import AsyncClient
 from supabase_auth.errors import AuthApiError
-from supabase_auth.types import User as AuthUser
 
 from app.config import get_admin_supabase, get_supabase, get_user_supabase
-from app.dependencies import get_access_token, get_current_user, get_db
+from app.dependencies import AuthUser, get_access_token, get_current_user, get_db
 from app.repository import get_profile
 from app.schemas.user import AuthResponse, LoginRequest, SignupRequest, User
+from app.utils import get_logger
+
+logger = get_logger("routepool.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def _sign_in(email: str, password: str) -> Any:
+def _mask(email: str) -> str:
+    """`mohit@example.com` -> `mo***@example.com`.
+
+    Enough to follow one account through a log without writing a full address
+    into Render's log viewer, which is neither access-controlled per-user nor
+    something we want holding personal data.
+    """
+    local, _, domain = email.partition("@")
+    return f"{local[:2]}***@{domain}" if domain else "***"
+
+
+async def _sign_in(email: str, password: str) -> Any:
     """Exchange credentials for a Supabase session, or raise a 400.
 
     Wrong password and unknown address deliberately produce the same message —
     telling them apart would let anyone probe which emails have accounts.
     """
     try:
-        session = get_supabase().auth.sign_in_with_password(
+        client = await get_supabase()
+        session = await client.auth.sign_in_with_password(
             {"email": email, "password": password}
         )
-    except AuthApiError:
+    except AuthApiError as exc:
+        logger.warning("sign-in failed for %s: %s", _mask(email), exc)
         session = None
     if session is None or session.session is None:
         raise HTTPException(
@@ -40,11 +55,15 @@ def _sign_in(email: str, password: str) -> Any:
     return session
 
 
-def _profile_or_502(db: Client, user_id: str) -> dict[str, Any]:
-    profile = get_profile(db, user_id)
+async def _profile_or_502(db: AsyncClient, user_id: str) -> dict[str, Any]:
+    profile = await get_profile(db, user_id)
     if profile is None:
         # The on_auth_user_created trigger should have made this row. If it is
         # missing, schema.sql was never applied to this project.
+        logger.error(
+            "no profiles row for user %s -- is the on_auth_user_created trigger installed?",
+            user_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Account exists but has no profile row. Has supabase/schema.sql been run?",
@@ -53,10 +72,11 @@ def _profile_or_502(db: Client, user_id: str) -> dict[str, Any]:
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-def signup(payload: SignupRequest) -> AuthResponse:
-    admin = get_admin_supabase()
+async def signup(payload: SignupRequest) -> AuthResponse:
+    logger.info("signup requested for %s as role=%s", _mask(payload.email), payload.role)
+    admin = await get_admin_supabase()
     try:
-        admin.auth.admin.create_user(
+        await admin.auth.admin.create_user(
             {
                 "email": payload.email,
                 "password": payload.password,
@@ -73,6 +93,12 @@ def signup(payload: SignupRequest) -> AuthResponse:
         )
     except AuthApiError as exc:
         already_registered = "already" in str(exc).lower()
+        if already_registered:
+            logger.warning("signup rejected, %s already exists", _mask(payload.email))
+        else:
+            # Not the caller's fault as far as we can tell -- a rejected password
+            # policy, a rate limit, or Supabase itself being unhappy.
+            logger.error("signup failed for %s: %s", _mask(payload.email), exc)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT if already_registered else status.HTTP_400_BAD_REQUEST,
             detail="An account with that email already exists."
@@ -80,8 +106,9 @@ def signup(payload: SignupRequest) -> AuthResponse:
             else f"Could not create the account: {exc}",
         )
 
-    session = _sign_in(payload.email, payload.password)
-    profile = _profile_or_502(get_supabase(), session.user.id)
+    session = await _sign_in(payload.email, payload.password)
+    profile = await _profile_or_502(await get_supabase(), session.user.id)
+    logger.info("signup complete: user %s role=%s", session.user.id, payload.role)
     return AuthResponse(
         access_token=session.session.access_token,
         user=User.from_row(profile, include_email=True),
@@ -89,9 +116,10 @@ def signup(payload: SignupRequest) -> AuthResponse:
 
 
 @router.post("/login", response_model=AuthResponse)
-def login(payload: LoginRequest) -> AuthResponse:
-    session = _sign_in(payload.email, payload.password)
-    profile = _profile_or_502(get_supabase(), session.user.id)
+async def login(payload: LoginRequest) -> AuthResponse:
+    session = await _sign_in(payload.email, payload.password)
+    profile = await _profile_or_502(await get_supabase(), session.user.id)
+    logger.info("login ok: user %s", session.user.id)
     return AuthResponse(
         access_token=session.session.access_token,
         user=User.from_row(profile, include_email=True),
@@ -99,20 +127,22 @@ def login(payload: LoginRequest) -> AuthResponse:
 
 
 @router.get("/me", response_model=User)
-def me(
+async def me(
     user: AuthUser = Depends(get_current_user),
-    db: Client = Depends(get_db),
+    db: AsyncClient = Depends(get_db),
 ) -> User:
     """Restore the session on reload. `get_current_user` 401s on a dead token."""
-    return User.from_row(_profile_or_502(db, user.id), include_email=True)
+    return User.from_row(await _profile_or_502(db, user.id), include_email=True)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(token: str = Depends(get_access_token)) -> Response:
+async def logout(token: str = Depends(get_access_token)) -> Response:
     try:
-        get_user_supabase(token).auth.sign_out()
-    except AuthApiError:
+        client = await get_user_supabase(token)
+        await client.auth.sign_out()
+        logger.info("logout ok")
+    except AuthApiError as exc:
         # Already expired or revoked — the caller is signed out either way, and
         # the frontend signs out locally regardless of what this returns.
-        pass
+        logger.debug("sign-out call rejected, treating as already signed out: %s", exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
